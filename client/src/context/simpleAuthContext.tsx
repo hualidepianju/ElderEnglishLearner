@@ -2,14 +2,12 @@ import React, { createContext, useState, useEffect, useCallback, ReactNode, useC
 import { useToast } from "@/hooks/use-toast";
 import { useLocation } from "wouter";
 
-// 用户偏好类型
 interface Preferences {
   fontSize: "small" | "medium" | "large";
   theme: "light" | "dark";
   language: "zh" | "en";
 }
 
-// 用户类型
 interface User {
   id: number;
   username: string;
@@ -20,8 +18,13 @@ interface User {
   streak: number;
 }
 
-// 认证上下文类型
-interface AuthContextType {
+type AuthState = {
+  user: User | null;
+  isLoading: boolean;
+  error: Error | null;
+};
+
+type AuthContextType = {
   user: User | null;
   isAuthenticated: boolean;
   isAdmin: boolean;
@@ -35,35 +38,38 @@ interface AuthContextType {
   register: (username: string, nickname: string, password: string) => Promise<boolean>;
   updatePreferences: (preferences: Partial<Preferences>) => Promise<void>;
   updateFontSize: () => void;
-}
+};
 
 // 创建认证上下文
 const AuthContext = createContext<AuthContextType | null>(null);
 
 // 认证提供者组件
-export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<User | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+export function SimpleAuthProvider({ children }: { children: ReactNode }) {
+  const [authState, setAuthState] = useState<AuthState>({
+    user: null,
+    isLoading: true,
+    error: null
+  });
+  
   const [isPendingLogin, setIsPendingLogin] = useState(false);
   const [isPendingRegister, setIsPendingRegister] = useState(false);
   const [isPendingLogout, setIsPendingLogout] = useState(false);
-  
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
   const { toast } = useToast();
   const [, navigate] = useLocation();
 
   // 检查用户是否已登录
   const checkAuth = useCallback(async () => {
     try {
-      setIsLoading(true);
+      setAuthState(prev => ({ ...prev, isLoading: true }));
       
       const response = await fetch('/api/user', {
         credentials: 'include'
       });
       
       if (response.status === 401) {
-        setUser(null);
-        setIsLoading(false);
+        setAuthState({ user: null, isLoading: false, error: null });
         return;
       }
       
@@ -71,18 +77,20 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         throw new Error('获取用户信息失败');
       }
       
-      const userData = await response.json();
-      setUser(userData);
+      const user = await response.json();
+      setAuthState({ user, isLoading: false, error: null });
       
       // 应用用户字体大小偏好
-      if (userData?.preferences?.fontSize) {
-        document.documentElement.dataset.fontSize = userData.preferences.fontSize;
+      if (user?.preferences?.fontSize) {
+        document.documentElement.dataset.fontSize = user.preferences.fontSize;
       }
     } catch (error) {
       console.error('获取用户信息失败:', error);
-      setUser(null);
-    } finally {
-      setIsLoading(false);
+      setAuthState(prev => ({ 
+        ...prev, 
+        isLoading: false, 
+        error: error instanceof Error ? error : new Error('未知错误') 
+      }));
     }
   }, []);
   
@@ -113,12 +121,13 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         throw new Error('登录失败，请稍后再试');
       }
       
-      const userData = await response.json();
-      setUser(userData);
+      const user = await response.json();
+      
+      setAuthState({ user, isLoading: false, error: null });
       
       toast({
         title: '登录成功',
-        description: `欢迎回来，${userData.nickname}！`
+        description: `欢迎回来，${user.nickname}！`
       });
       
       navigate('/');
@@ -132,6 +141,11 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         description: message,
         variant: 'destructive'
       });
+      
+      setAuthState(prev => ({ 
+        ...prev, 
+        error: error instanceof Error ? error : new Error('未知错误') 
+      }));
       
       return false;
     } finally {
@@ -168,8 +182,9 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         throw new Error(error.message || '注册失败，用户名可能已存在');
       }
       
-      const userData = await response.json();
-      setUser(userData);
+      const user = await response.json();
+      
+      setAuthState({ user, isLoading: false, error: null });
       
       toast({
         title: '注册成功',
@@ -188,6 +203,11 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         variant: 'destructive'
       });
       
+      setAuthState(prev => ({ 
+        ...prev, 
+        error: error instanceof Error ? error : new Error('未知错误') 
+      }));
+      
       return false;
     } finally {
       setIsPendingRegister(false);
@@ -204,7 +224,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         credentials: 'include'
       });
       
-      setUser(null);
+      setAuthState({ user: null, isLoading: false, error: null });
       
       toast({
         title: '已退出登录'
@@ -224,7 +244,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   // 更新用户设置
   const updatePreferences = async (preferences: Partial<Preferences>): Promise<void> => {
-    if (!user) {
+    if (!authState.user) {
       toast({
         title: '更新失败',
         description: '您需要先登录',
@@ -234,9 +254,9 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
     
     try {
-      const updatedPreferences = { ...user.preferences, ...preferences };
+      const updatedPreferences = { ...authState.user.preferences, ...preferences };
       
-      const response = await fetch(`/api/users/${user.id}`, {
+      const response = await fetch(`/api/users/${authState.user.id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json'
@@ -252,7 +272,11 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       }
       
       const updatedUser = await response.json();
-      setUser(updatedUser);
+      
+      setAuthState(prev => ({
+        ...prev,
+        user: updatedUser
+      }));
       
       toast({
         title: '设置已更新',
@@ -273,18 +297,18 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   // 更新字体大小
   const updateFontSize = useCallback(() => {
-    if (user?.preferences?.fontSize) {
-      document.documentElement.dataset.fontSize = user.preferences.fontSize;
+    if (authState.user?.preferences?.fontSize) {
+      document.documentElement.dataset.fontSize = authState.user.preferences.fontSize;
     }
-  }, [user?.preferences?.fontSize]);
+  }, [authState.user?.preferences?.fontSize]);
 
   return (
     <AuthContext.Provider
       value={{
-        user,
-        isAuthenticated: !!user,
-        isAdmin: !!user?.isAdmin,
-        isLoading,
+        user: authState.user,
+        isAuthenticated: !!authState.user,
+        isAdmin: !!authState.user?.isAdmin,
+        isLoading: authState.isLoading,
         isPendingLogin,
         isPendingRegister,
         isPendingLogout,
@@ -299,13 +323,13 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       {children}
     </AuthContext.Provider>
   );
-};
+}
 
 // 使用认证上下文的自定义钩子
-export const useAuth = () => {
+export function useAuth() {
   const context = useContext(AuthContext);
   if (!context) {
-    throw new Error('useAuth 必须在 AuthProvider 内部使用');
+    throw new Error('useAuth 必须在 SimpleAuthProvider 内部使用');
   }
   return context;
-};
+}
